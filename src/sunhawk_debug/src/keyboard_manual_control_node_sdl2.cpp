@@ -386,7 +386,7 @@ private:
 			target_yaw_ = 0.0;
 		}
 
-		// throttle：松手保持
+		// 总距：松手保持
 		if (thr_dir != 0) {
 			target_thr_ = clamp(target_thr_ + thr_dir * throttle_rate_ * dt, throttle_min_, throttle_max_);
 		}
