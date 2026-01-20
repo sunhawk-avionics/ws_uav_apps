@@ -82,15 +82,6 @@ static inline double throttle_raw_from_msg(const EngineCtrlMsg &m, bool prefer_o
 	return 0.0;
 }
 
-static inline bool start_from_msg(const EngineCtrlMsg &m)
-{
-	if constexpr(has_start_field<EngineCtrlMsg>::value) {
-		return static_cast<bool>(m.start);
-	}
-
-	return false;
-}
-
 static inline void fill_realtime_msg(RealtimeMsg &m, uint64_t timestamp_us, double rpm_meas, double throttle_norm_0_1)
 {
 	m.timestamp = timestamp_us;
@@ -140,7 +131,6 @@ public:
 		thrust_z_to_collective_offset_ = this->declare_parameter<double>("thrust_z_to_collective_offset", 0.0);
 
 		// -------------------- start logic --------------------
-		use_start_field_ = this->declare_parameter<bool>("use_start_field", true);
 		start_force_throttle_zero_ = this->declare_parameter<bool>("start_force_throttle_zero", true);
 		start_force_collective_zero_ = this->declare_parameter<bool>("start_force_collective_zero", true);
 		start_to_run_rpm_ratio_ = this->declare_parameter<double>("start_to_run_rpm_ratio", 0.95);
@@ -169,9 +159,17 @@ public:
 			const double thr_raw = throttle_raw_from_msg(*msg, throttle_prefer_output_field_);
 			throttle_raw_.store(thr_raw);
 
-			if (use_start_field_) {
-				start_cmd_.store(start_from_msg(*msg));
+			bool start = msg->start;
+			bool last  = prev_start_.exchange(start);
+
+			if (start && !last) {
+				engine_enable_.store(true);   // 上升沿：点火成功后进入“持续阶段”
 			}
+
+			if (msg->stop || msg->kill) {
+				engine_enable_.store(false);  // 只有熄火指令能清掉自保持
+			}
+
 		});
 
 		sub_thrust_sp_ = this->create_subscription<ThrustSpMsg>(
@@ -193,12 +191,7 @@ public:
 				 std::chrono::duration_cast<std::chrono::nanoseconds>(period),
 				 std::bind(&EngineRpmModelNode::on_timer, this));
 
-		RCLCPP_INFO(get_logger(), "EngineRpmModelNode started (start-controlled idle=%.1f rpm).", idle_rpm_);
-
-		if (use_start_field_ && !has_start_field<EngineCtrlMsg>::value) {
-			RCLCPP_WARN(get_logger(),
-				    "use_start_field=true but SunhawkEngineCtrl has no 'start' field in this build. start will stay false.");
-		}
+		RCLCPP_INFO(get_logger(), "EngineRpmModelNode started");
 	}
 
 private:
@@ -297,12 +290,6 @@ private:
 
 	void update_stage_from_start(const rclcpp::Time &now, bool start_cmd, double rpm_true)
 	{
-		if (!use_start_field_) {
-			// 不使用 start 字段时，不做内部状态机；直接保持 run
-			stage_state_ = stage_run_;
-			return;
-		}
-
 		if (!start_cmd) {
 			stage_state_ = stage_off_;
 			start_begin_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
@@ -364,21 +351,19 @@ private:
 		double thr_raw = thr_raw_in;
 		double coll = coll_in;
 
-		if (use_start_field_) {
-			if (!start_cmd) {
-				// 未启动或强制熄火：输入全部归零
+		if (!start_cmd) {
+			// 未启动或强制熄火：输入全部归零
+			thr_raw = 0.0;
+			coll = 0.0;
+		}
+
+		if (stage_state_ != stage_run_) {
+			if (start_force_throttle_zero_) {
 				thr_raw = 0.0;
-				coll = 0.0;
 			}
 
-			if (stage_state_ != stage_run_) {
-				if (start_force_throttle_zero_) {
-					thr_raw = 0.0;
-				}
-
-				if (start_force_collective_zero_) {
-					coll = 0.0;
-				}
+			if (start_force_collective_zero_) {
+				coll = 0.0;
 			}
 		}
 
@@ -416,7 +401,6 @@ private:
 	double thrust_z_to_collective_offset_{0.0};
 
 	// start logic
-	bool use_start_field_{true};
 	bool start_force_throttle_zero_{true};
 	bool start_force_collective_zero_{true};
 	double start_to_run_rpm_ratio_{0.95};
@@ -435,7 +419,9 @@ private:
 
 	std::atomic<double> throttle_raw_{0.0};
 	std::atomic<double> collective_cmd_{0.0};
-	std::atomic<bool> start_cmd_{false};
+	std::atomic<bool> engine_enable_{false};   // 是否允许运行（自保持）
+	std::atomic<bool> prev_start_{false};      // 用于检测上升沿
+
 
 	rclcpp::Subscription<EngineCtrlMsg>::SharedPtr sub_engine_ctrl_;
 	rclcpp::Subscription<ThrustSpMsg>::SharedPtr sub_thrust_sp_;
