@@ -1,47 +1,61 @@
 engine_rpm_model:
   ros__parameters:
+
     # -------------------- topics --------------------
     input_engine_ctrl_topic: "/fmu/out/sunhawk_engine_ctrl"
     input_thrust_sp_topic: "/fmu/out/vehicle_thrust_setpoint"
-
     output_realtime_topic: "/fmu/in/sunhawk_realtime_data"
     output_monitor_topic: "/fmu/in/sunhawk_engine_monitor"
     output_rpm_topic: "/fmu/in/rpm"
 
     update_rate_hz: 50.0
 
-    # 选择从 SunhawkEngineCtrl 里取哪个字段作为“油门/燃油指令”
-    # - true : 优先用 msg.output（如果该字段存在）
-    # - false: 用 msg.throttle
-    throttle_prefer_output_field: true
+    # -------------------- start logic (关键：用 start 字段决定是否启动) --------------------
+    use_start_field: true
 
-    # thrust_setpoint.z -> collective 归一化映射：
-    # collective = clamp(scale * thrust_z + offset, 0..1)
-    # PX4 通常 thrust_z 为负，所以下面 scale=-1 可以把 -0.6 变成 0.6
-    thrust_z_to_collective_scale: -1.0
-    thrust_z_to_collective_offset: 0.0
+    # 启动阶段强制：油门=0，总距=0（与你描述一致）
+    start_force_throttle_zero: true
+    start_force_collective_zero: true
+
+    # start -> run 的切换条件：转速达到怠速的一定比例，并且持续最少时间
+    start_to_run_rpm_ratio: 0.95
+    start_to_run_min_time_s: 0.8
 
     # -------------------- throttle input mapping --------------------
-    # 将“控制器输出/油门原始值”映射到 0..1
-    # 如果你的输入本来就是 -1..1，请改成：min=-1 max=1
+    # SunhawkEngineCtrl 内部可能有 throttle / output 字段；这里优先使用 output（如果存在）
+    throttle_prefer_output_field: true
+
+    # throttle_raw -> 0..1
     throttle_in_min: 0.0
     throttle_in_max: 1.0
     throttle_inverted: false
-    throttle_deadband: 0.0
-    throttle_expo: 1.0
+    throttle_deadband: 0.00
+    throttle_expo: 1.00
 
-    # 对油门命令额外加一个 slew（一般可以非常大，相当于不限制；
-    # 真正的动态主要靠 fuel_tau/fuel_rate 来体现）
+    # 输入油门平滑（命令侧），数值大=几乎不限制
     throttle_slew_up: 100.0
     throttle_slew_down: 100.0
 
-    # collective 低通滤波（让总距阶跃不要像“方波”一样硬）
-    collective_smoothing_tau: 0.05
+    # -------------------- thrust setpoint -> collective --------------------
+    # collective = clamp(scale * thrust_z + offset, 0..1)
+    # PX4 中 thrust_z 通常为负（向上推力），所以 scale 给 -1 可以把它变成正的 collective
+    thrust_z_to_collective_scale: -1.0
+    thrust_z_to_collective_offset: 0.0
 
-    # -------------------- engine limits / init --------------------
+    # -------------------- stage mapping (内部状态机/监控发布) --------------------
+    use_stage_input: true
+    stage_off: 0
+    stage_start: 1
+    stage_run: 2
+    stage_shutdown: 3
+
+    # -------------------- engine limits --------------------
     rpm_idle: 1600.0
     rpm_max: 5800.0
     rpm_init: 0.0
+
+    # 低于这个转速（OFF/SHUTDOWN）就直接“吸住”到 0，避免无限趋近 0 的尾巴
+    rpm_stop_threshold: 20.0
 
     # -------------------- shaft dynamics --------------------
     # 转动惯量（归一化模型的关键）：
@@ -68,8 +82,8 @@ engine_rpm_model:
     drag_c2: 0.0
 
     # -------------------- rotor/load calibration --------------------
-    # 核心：用“定转速下的标定表”把负载建出来
-    # 在 load_rpm_ref(5000rpm) 下，维持该 rpm 所需的油门(0..1)
+    # 你给的标定：在定转速 5000 下，coll=0 -> throttle≈0.23；coll=0.85 -> throttle≈0.77
+    # 这里把它当作“负载映射”，用于把总距转换成等效负载扭矩。
     load_rpm_ref: 5000.0
     load_omega_exp: 2.0
     air_density_ratio: 1.0
@@ -78,31 +92,33 @@ engine_rpm_model:
     # collective_points 与 fuel_required_points 必须等长
     # 例子：coll=0 需要 0.23；coll=0.85 需要 0.77
     collective_points:      [0.00, 0.20, 0.40, 0.60, 0.85, 1.00]
-    fuel_required_points:   [0.23, 0.30, 0.40, 0.55, 0.77, 0.88]
+    fuel_required_points:   [0.23, 0.30, 0.38, 0.50, 0.77, 0.90]
 
     # 额外二次负载项（可选，用于补“随 rpm 升高负载更陡”的感觉）
     extra_load_coeff: 0.0
 
-    # -------------------- stage / start / idle --------------------
-    use_stage_input: true
-    stage_off: 0
-    stage_start: 1
-    stage_run: 2
-    stage_shutdown: 3
+    # 总距输入平滑（更“真实”一点，避免总距阶跃带来的数值抖动）
+    collective_smoothing_tau: 0.05
 
+    # -------------------- starting --------------------
     starter_torque: 0.25
     start_fuel: 0.18
 
-    # idle 模式：当 throttle 很小且总距很小（或处于 STARTING）时，
-    # 使用内部 PI 维持 idle_rpm
+    # -------------------- idle controller --------------------
+    # 目标：start=true 且油门=0 时，维持 1600rpm（怠速）；油门在此基础上增加 rpm
     idle_controller_enable: true
     idle_rpm: 1600.0
+
+    # 认为“接近 0 油门”的阈值（怠速 PI 仅在启动/接近 0 油门时更新）
     idle_throttle_threshold: 0.02
-    idle_collective_threshold: 0.05
+
     idle_kp: 0.0006
     idle_ki: 0.15
-    idle_fuel_min: 0.05
+
+    # 允许 idle PI 输出到 0（否则会出现怠速被抬高/无法稳定）
+    idle_fuel_min: 0.0
     idle_fuel_max: 0.30
+
     idle_integ_min: -5.0
     idle_integ_max:  5.0
 
@@ -122,6 +138,6 @@ engine_rpm_model:
     governor_slew_down: 4.0
     governor_droop: 0.0
 
-    # -------------------- sensor model --------------------
+    # -------------------- rpm sensor model --------------------
     rpm_sensor_tau: 0.02
     rpm_noise_std: 0.0

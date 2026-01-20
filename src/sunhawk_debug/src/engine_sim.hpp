@@ -213,6 +213,8 @@ struct Params {
 	double rpm_max{5800.0};
 	// initial rpm
 	double rpm_init{0.0};
+	// OFF/SHUTDOWN 时，当转速低于该阈值就“吸住”到 0，避免出现无限趋近 0 的尾巴
+	double rpm_stop_threshold{20.0};
 
 	// ---- shaft dynamics ----
 	double shaft_inertia_J{3.5e-4};
@@ -302,8 +304,13 @@ public:
 		rebuild_load_coeff_table();
 
 		// reset state to new init
+		last_mode_ = Mode::OFF;
 		omega_ = rpm_to_omega(clamp(p_.rpm_init, 0.0, p_.rpm_max));
 		fuel_state_ = 0.0;
+		fuel_cmd_target_ = 0.0;
+		idle_fuel_hold_ = 0.0;
+		rpm_meas_ = omega_to_rpm(omega_);
+		thr_out_norm_ = 0.0;
 		thr_state_.reset(0.0);
 		fuel_cmd_slew_.reset(0.0);
 		collective_filt_.reset(0.0);
@@ -347,42 +354,73 @@ public:
 		// 3) determine mode
 		const Mode mode = decide_mode(stage_cmd_);
 
-		// 4) optionally internal governor
-		if (p_.governor_enable) {
+		// 3.1) detect mode transitions (用于在关机/重新启动时重置控制器与状态)
+		if (mode != last_mode_) {
+			if (mode == Mode::OFF || mode == Mode::SHUTDOWN) {
+				// 关机：清空燃油与积分，保证“未启动=0RPM / 强制熄火=最终0RPM”
+				idle_pi_.reset(0.0);
+				gov_pi_.reset(0.0);
+				fuel_cmd_slew_.reset(0.0);
+				fuel_state_ = 0.0;
+				fuel_cmd_target_ = 0.0;
+				idle_fuel_hold_ = 0.0;
+			}
+
+			if (mode == Mode::STARTING) {
+				// 启动：从干净状态开始
+				idle_pi_.reset(0.0);
+				gov_pi_.reset(0.0);
+				fuel_cmd_slew_.reset(0.0);
+				idle_fuel_hold_ = clamp(p_.start_fuel, p_.idle_fuel_min, p_.idle_fuel_max);
+			}
+
+			last_mode_ = mode;
+		}
+
+		// 4) optionally internal governor (仅在运行/启动时有效)
+		if (p_.governor_enable && mode != Mode::OFF && mode != Mode::SHUTDOWN) {
 			const double rpm_meas_no_noise = rpm_sensor_filt_.y();
 			thr_norm = governor_step(rpm_meas_no_noise, coll, dt);
+		}
+
+		// OFF/SHUTDOWN 时：忽略油门输入
+		if (mode == Mode::OFF || mode == Mode::SHUTDOWN) {
+			thr_norm = 0.0;
 		}
 
 		thr_out_norm_ = thr_norm;
 
 		// 5) compute fuel target
-		double fuel_target = thr_norm;
+		double fuel_target = 0.0;
 
-		// idle control / start schedule
-		if (mode == Mode::OFF) {
+		if (mode == Mode::OFF || mode == Mode::SHUTDOWN) {
 			fuel_target = 0.0;
+			idle_fuel_hold_ = 0.0;
 
 		} else {
-			const bool want_idle = p_.idle_controller_enable &&
-					       ((mode == Mode::STARTING) ||
-						(thr_norm <= p_.idle_throttle_threshold && coll <= p_.idle_collective_threshold));
+			// idle PI：只在“启动阶段”或“油门接近 0”时更新；
+			// 注意：不再用 collective_threshold gating（否则一给总距就会直接熄火）。
+			const bool idle_active = p_.idle_controller_enable &&
+						 ((mode == Mode::STARTING) || (thr_norm <= p_.idle_throttle_threshold));
 
-			if (want_idle) {
+			if (idle_active) {
 				const double rpm_meas_no_noise = rpm_sensor_filt_.y();
 				const double e = p_.idle_rpm - rpm_meas_no_noise;
-				fuel_target = idle_pi_.step(e, dt, p_.idle_kp, p_.idle_ki,
-							    p_.idle_fuel_min, p_.idle_fuel_max,
-							    p_.idle_integ_min, p_.idle_integ_max);
+				double idle_fuel = idle_pi_.step(e, dt,
+								 p_.idle_kp, p_.idle_ki,
+								 p_.idle_fuel_min, p_.idle_fuel_max,
+								 p_.idle_integ_min, p_.idle_integ_max);
 
-				// during starting, ensure minimum start fuel
 				if (mode == Mode::STARTING) {
-					fuel_target = std::max(fuel_target, p_.start_fuel);
+					idle_fuel = std::max(idle_fuel, p_.start_fuel);
 				}
 
-			} else {
-				// running normally
-				fuel_target = clamp(fuel_target, p_.fuel_min, p_.fuel_max);
+				idle_fuel_hold_ = clamp(idle_fuel, p_.idle_fuel_min, p_.idle_fuel_max);
 			}
+
+			// “0油门=怠速”实现：燃油指令不能低于怠速维持所需的最小值（idle_fuel_hold_）
+			fuel_target = std::max(thr_norm, idle_fuel_hold_);
+			fuel_target = clamp(fuel_target, p_.fuel_min, p_.fuel_max);
 		}
 
 		fuel_cmd_target_ = fuel_target;
@@ -413,7 +451,7 @@ public:
 		// 8) integrate shaft dynamics
 		double T_net = T_engine + T_starter - T_load - T_drag;
 
-		if (mode == Mode::OFF) {
+		if (mode == Mode::OFF || mode == Mode::SHUTDOWN) {
 			// when off, no combustion torque and no starter
 			T_net = -T_load - T_drag;
 		}
@@ -421,6 +459,14 @@ public:
 		const double J = std::max(p_.shaft_inertia_J, 1e-6);
 		omega_ += (T_net / J) * dt;
 		omega_ = clamp(omega_, 0.0, rpm_to_omega(p_.rpm_max));
+
+		// OFF/SHUTDOWN 低转速时“吸住”到 0（避免 0 附近尾巴）
+		if ((mode == Mode::OFF || mode == Mode::SHUTDOWN) && p_.rpm_stop_threshold > 0.0) {
+			if (omega_ < rpm_to_omega(p_.rpm_stop_threshold)) {
+				omega_ = 0.0;
+				fuel_state_ = 0.0;
+			}
+		}
 
 		// 9) sensor model (LPF + noise)
 		const double rpm_true2 = omega_to_rpm(omega_);
@@ -591,9 +637,12 @@ private:
 	int stage_cmd_{0};
 
 	// internal state
+	Mode last_mode_{Mode::OFF};
 	double omega_{0.0};
 	double fuel_state_{0.0};
 	double fuel_cmd_target_{0.0};
+	// hold last idle fuel output (acts as a floor when throttle is near 0)
+	double idle_fuel_hold_{0.0};
 	double rpm_meas_{0.0};
 	double thr_out_norm_{0.0};
 

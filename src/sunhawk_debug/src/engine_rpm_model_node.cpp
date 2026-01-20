@@ -2,12 +2,13 @@
  *
  * Realistic Engine RPM Plant Model Node (ROS 2)
  *
- * 相比最简版：
- * - 不再用 thr->rpm 的单一查表；改为“扭矩平衡 + 转动惯量”动力学：
- *     J*dω/dt = T_engine(fuel,rpm) + T_starter - T_load(collective,rpm) - T_drag
- * - 支持使用你已有标定：collective -> (在 5000rpm 维持所需油门)
- *   这样能自然出现：总距越大，油门越大，但 rpm 仍能维持在定转速附近。
- * - 可选内置 governor（反推油门），默认关闭：只做 plant。
+ * 关键点（按你的需求）：
+ * 1) 通过 SunhawkEngineCtrl.start 来决定发动机是否“点火运行”
+ *    - start==false : 输出 0 RPM（发动机关闭）
+ *    - start==true  : 自动启动并进入怠速（idle_rpm=1600）
+ * 2) 启动/怠速阶段：油门=0，总距=0（可参数化强制）
+ * 3) 启动后：0 油门=1600rpm（怠速保持），油门在此基础上增加转速；
+ *    只有负载（总距）足够大时才会把 rpm 拉低。
  *
  ****************************************************************************/
 
@@ -17,6 +18,8 @@
 #include <cmath>
 #include <cstdint>
 #include <string>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <rclcpp/rclcpp.hpp>
@@ -33,11 +36,11 @@
 
 using namespace std::chrono_literals;
 
-using ThrottleMsg = px4_msgs::msg::SunhawkEngineCtrl;
-using RealtimeMsg = px4_msgs::msg::SunhawkRealtimeData;
-using MonitorMsg  = px4_msgs::msg::SunhawkEngineMonitor;
-using RpmMsg      = px4_msgs::msg::Rpm;
-using ThrustSpMsg = px4_msgs::msg::VehicleThrustSetpoint;
+using EngineCtrlMsg = px4_msgs::msg::SunhawkEngineCtrl;
+using RealtimeMsg   = px4_msgs::msg::SunhawkRealtimeData;
+using MonitorMsg    = px4_msgs::msg::SunhawkEngineMonitor;
+using RpmMsg        = px4_msgs::msg::Rpm;
+using ThrustSpMsg   = px4_msgs::msg::VehicleThrustSetpoint;
 
 static inline double clamp(double v, double lo, double hi)
 {
@@ -45,6 +48,7 @@ static inline double clamp(double v, double lo, double hi)
 }
 
 // -------------------- Compile-time member detection --------------------
+
 template<typename T, typename = void>
 struct has_output_field : std::false_type {};
 
@@ -58,40 +62,40 @@ template<typename T>
 struct has_throttle_field<T, std::void_t<decltype(std::declval<T>().throttle)>> : std::true_type {};
 
 template<typename T, typename = void>
-struct has_engine_stage_field : std::false_type {};
+struct has_start_field : std::false_type {};
 
 template<typename T>
-struct has_engine_stage_field<T, std::void_t<decltype(std::declval<T>().engine_stage)>> : std::true_type {};
+struct has_start_field<T, std::void_t<decltype(std::declval<T>().start)>> : std::true_type {};
 
-static inline double throttle_raw_from_msg(const ThrottleMsg &m, bool prefer_output)
+static inline double throttle_raw_from_msg(const EngineCtrlMsg &m, bool prefer_output)
 {
-	if constexpr(has_output_field<ThrottleMsg>::value) {
+	if constexpr(has_output_field<EngineCtrlMsg>::value) {
 		if (prefer_output) {
 			return static_cast<double>(m.output);
 		}
 	}
 
-	if constexpr(has_throttle_field<ThrottleMsg>::value) {
+	if constexpr(has_throttle_field<EngineCtrlMsg>::value) {
 		return static_cast<double>(m.throttle);
 	}
 
 	return 0.0;
 }
 
-static inline int stage_from_msg(const ThrottleMsg &m)
+static inline bool start_from_msg(const EngineCtrlMsg &m)
 {
-	if constexpr(has_engine_stage_field<ThrottleMsg>::value) {
-		return static_cast<int>(m.engine_stage);
+	if constexpr(has_start_field<EngineCtrlMsg>::value) {
+		return static_cast<bool>(m.start);
 	}
 
-	return 0;
+	return false;
 }
 
 static inline void fill_realtime_msg(RealtimeMsg &m, uint64_t timestamp_us, double rpm_meas, double throttle_norm_0_1)
 {
 	m.timestamp = timestamp_us;
 	m.engine_rpm_feedback = static_cast<float>(rpm_meas);
-	// 这里用 0~100% 表示内部“油门/燃油指令”（更直观）
+	// 这里用 0~100% 表示“油门指令(归一化)”
 	m.pedal_aimed = static_cast<float>(clamp(throttle_norm_0_1, 0.0, 1.0) * 100.0);
 }
 
@@ -114,7 +118,7 @@ public:
 	EngineRpmModelNode()
 		: Node("engine_rpm_model")
 	{
-		// topics
+		// -------------------- topics --------------------
 		input_engine_ctrl_topic_ = this->declare_parameter<std::string>(
 						   "input_engine_ctrl_topic", "/fmu/out/sunhawk_engine_ctrl");
 		input_thrust_sp_topic_ = this->declare_parameter<std::string>(
@@ -128,27 +132,46 @@ public:
 
 		update_rate_hz_ = this->declare_parameter<double>("update_rate_hz", 200.0);
 
-		// throttle field selection
+		// -------------------- input field selection --------------------
 		throttle_prefer_output_field_ = this->declare_parameter<bool>("throttle_prefer_output_field", true);
 
-		// thrust->collective mapping
+		// thrust->collective mapping: collective = clamp(scale * thrust_z + offset, 0..1)
 		thrust_z_to_collective_scale_ = this->declare_parameter<double>("thrust_z_to_collective_scale", -1.0);
 		thrust_z_to_collective_offset_ = this->declare_parameter<double>("thrust_z_to_collective_offset", 0.0);
 
-		// model params
+		// -------------------- start logic --------------------
+		use_start_field_ = this->declare_parameter<bool>("use_start_field", true);
+		start_force_throttle_zero_ = this->declare_parameter<bool>("start_force_throttle_zero", true);
+		start_force_collective_zero_ = this->declare_parameter<bool>("start_force_collective_zero", true);
+		start_to_run_rpm_ratio_ = this->declare_parameter<double>("start_to_run_rpm_ratio", 0.95);
+		start_to_run_min_time_s_ = this->declare_parameter<double>("start_to_run_min_time_s", 0.8);
+
+		// -------------------- model params --------------------
 		auto p = load_params_from_ros();
 		engine_.set_params(p);
 
-		// QoS
+		// stage constants (node uses same values as plant)
+		stage_off_ = p.stage_off;
+		stage_start_ = p.stage_start;
+		stage_run_ = p.stage_run;
+		stage_shutdown_ = p.stage_shutdown;
+		idle_rpm_ = p.idle_rpm;
+
+		stage_state_ = stage_off_;
+
+		// -------------------- QoS --------------------
 		rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
 		auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
-		sub_engine_ctrl_ = this->create_subscription<ThrottleMsg>(
+		sub_engine_ctrl_ = this->create_subscription<EngineCtrlMsg>(
 					   input_engine_ctrl_topic_, qos,
-		[this](const ThrottleMsg::UniquePtr msg) {
+		[this](const EngineCtrlMsg::UniquePtr msg) {
 			const double thr_raw = throttle_raw_from_msg(*msg, throttle_prefer_output_field_);
 			throttle_raw_.store(thr_raw);
-			stage_cmd_.store(stage_from_msg(*msg));
+
+			if (use_start_field_) {
+				start_cmd_.store(start_from_msg(*msg));
+			}
 		});
 
 		sub_thrust_sp_ = this->create_subscription<ThrustSpMsg>(
@@ -170,7 +193,12 @@ public:
 				 std::chrono::duration_cast<std::chrono::nanoseconds>(period),
 				 std::bind(&EngineRpmModelNode::on_timer, this));
 
-		RCLCPP_INFO(get_logger(), "EngineRpmModelNode (full) started.");
+		RCLCPP_INFO(get_logger(), "EngineRpmModelNode started (start-controlled idle=%.1f rpm).", idle_rpm_);
+
+		if (use_start_field_ && !has_start_field<EngineCtrlMsg>::value) {
+			RCLCPP_WARN(get_logger(),
+				    "use_start_field=true but SunhawkEngineCtrl has no 'start' field in this build. start will stay false.");
+		}
 	}
 
 private:
@@ -193,9 +221,12 @@ private:
 		p.rpm_idle = this->declare_parameter<double>("rpm_idle", 1600.0);
 		p.rpm_max  = this->declare_parameter<double>("rpm_max", 5800.0);
 		p.rpm_init = this->declare_parameter<double>("rpm_init", 0.0);
+		p.rpm_stop_threshold = this->declare_parameter<double>("rpm_stop_threshold", 20.0);
 
-		// dynamics
+		// shaft dynamics
 		p.shaft_inertia_J = this->declare_parameter<double>("shaft_inertia_J", 3.5e-4);
+
+		// fuel actuator
 		p.fuel_tau        = this->declare_parameter<double>("fuel_tau", 0.08);
 		p.fuel_rate_up    = this->declare_parameter<double>("fuel_rate_up", 3.0);
 		p.fuel_rate_down  = this->declare_parameter<double>("fuel_rate_down", 6.0);
@@ -229,13 +260,16 @@ private:
 		// start & idle controller
 		p.starter_torque = this->declare_parameter<double>("starter_torque", 0.25);
 		p.start_fuel     = this->declare_parameter<double>("start_fuel", 0.18);
+
 		p.idle_controller_enable = this->declare_parameter<bool>("idle_controller_enable", true);
 		p.idle_rpm = this->declare_parameter<double>("idle_rpm", 1600.0);
 		p.idle_throttle_threshold  = this->declare_parameter<double>("idle_throttle_threshold", 0.02);
-		p.idle_collective_threshold = this->declare_parameter<double>("idle_collective_threshold", 0.05);
+		// 注意：为了满足“0油门=怠速，即使给总距也不立刻熄火”的需求，
+		// plant 端不再用 idle_collective_threshold 作为 gating（仍保留参数声明兼容）。
+		p.idle_collective_threshold = this->declare_parameter<double>("idle_collective_threshold", 1.0);
 		p.idle_kp = this->declare_parameter<double>("idle_kp", 0.0006);
 		p.idle_ki = this->declare_parameter<double>("idle_ki", 0.15);
-		p.idle_fuel_min = this->declare_parameter<double>("idle_fuel_min", 0.05);
+		p.idle_fuel_min = this->declare_parameter<double>("idle_fuel_min", 0.0);
 		p.idle_fuel_max = this->declare_parameter<double>("idle_fuel_max", 0.30);
 		p.idle_integ_min = this->declare_parameter<double>("idle_integ_min", -5.0);
 		p.idle_integ_max = this->declare_parameter<double>("idle_integ_max", +5.0);
@@ -261,6 +295,41 @@ private:
 		return p;
 	}
 
+	void update_stage_from_start(const rclcpp::Time &now, bool start_cmd, double rpm_true)
+	{
+		if (!use_start_field_) {
+			// 不使用 start 字段时，不做内部状态机；直接保持 run
+			stage_state_ = stage_run_;
+			return;
+		}
+
+		if (!start_cmd) {
+			stage_state_ = stage_off_;
+			start_begin_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
+			return;
+		}
+
+		// start_cmd == true
+		if (stage_state_ == stage_off_ || stage_state_ == stage_shutdown_) {
+			stage_state_ = stage_start_;
+			start_begin_time_ = now;
+			return;
+		}
+
+		if (stage_state_ == stage_start_) {
+			const double gate_rpm = idle_rpm_ * clamp(start_to_run_rpm_ratio_, 0.1, 1.2);
+			double t = 0.0;
+
+			if (start_begin_time_.nanoseconds() != 0) {
+				t = (now - start_begin_time_).seconds();
+			}
+
+			if (rpm_true >= gate_rpm && t >= start_to_run_min_time_s_) {
+				stage_state_ = stage_run_;
+			}
+		}
+	}
+
 	void on_timer()
 	{
 		const rclcpp::Time now = this->get_clock()->now();
@@ -283,11 +352,37 @@ private:
 
 		if (dt > 0.2) { dt = 0.2; }
 
-		const double thr_raw = throttle_raw_.load();
-		const double coll = collective_cmd_.load();
-		const int stage = stage_cmd_.load();
+		const bool start_cmd = start_cmd_.load();
+		const double thr_raw_in = throttle_raw_.load();
+		double coll_in = collective_cmd_.load();
 
-		engine_.set_inputs(thr_raw, coll, stage);
+		// 用“上一拍”的真实转速做 stage 判据（避免用刚更新的 rpm 造成抖动）
+		const double rpm_true_pre = engine_.rpm_true();
+		update_stage_from_start(now, start_cmd, rpm_true_pre);
+
+		// 根据阶段强制输入
+		double thr_raw = thr_raw_in;
+		double coll = coll_in;
+
+		if (use_start_field_) {
+			if (!start_cmd) {
+				// 未启动或强制熄火：输入全部归零
+				thr_raw = 0.0;
+				coll = 0.0;
+			}
+
+			if (stage_state_ != stage_run_) {
+				if (start_force_throttle_zero_) {
+					thr_raw = 0.0;
+				}
+
+				if (start_force_collective_zero_) {
+					coll = 0.0;
+				}
+			}
+		}
+
+		engine_.set_inputs(thr_raw, coll, stage_state_);
 		engine_.step(dt);
 
 		const uint64_t ts_us = static_cast<uint64_t>(now.nanoseconds() / 1000LL);
@@ -299,7 +394,7 @@ private:
 		pub_realtime_->publish(rt);
 
 		MonitorMsg mon{};
-		fill_monitor_msg(mon, ts_us, stage);
+		fill_monitor_msg(mon, ts_us, stage_state_);
 		pub_monitor_->publish(mon);
 
 		RpmMsg rpm{};
@@ -315,17 +410,34 @@ private:
 	std::string output_rpm_topic_;
 	double update_rate_hz_{200.0};
 
+	// input options
 	bool throttle_prefer_output_field_{true};
 	double thrust_z_to_collective_scale_{-1.0};
 	double thrust_z_to_collective_offset_{0.0};
+
+	// start logic
+	bool use_start_field_{true};
+	bool start_force_throttle_zero_{true};
+	bool start_force_collective_zero_{true};
+	double start_to_run_rpm_ratio_{0.95};
+	double start_to_run_min_time_s_{0.8};
+	double idle_rpm_{1600.0};
+
+	int stage_off_{0};
+	int stage_start_{1};
+	int stage_run_{2};
+	int stage_shutdown_{3};
+
+	int stage_state_{0};
+	rclcpp::Time start_begin_time_{0, 0, RCL_ROS_TIME};
 
 	engine_sim::EnginePlant engine_{};
 
 	std::atomic<double> throttle_raw_{0.0};
 	std::atomic<double> collective_cmd_{0.0};
-	std::atomic<int> stage_cmd_{0};
+	std::atomic<bool> start_cmd_{false};
 
-	rclcpp::Subscription<ThrottleMsg>::SharedPtr sub_engine_ctrl_;
+	rclcpp::Subscription<EngineCtrlMsg>::SharedPtr sub_engine_ctrl_;
 	rclcpp::Subscription<ThrustSpMsg>::SharedPtr sub_thrust_sp_;
 	rclcpp::Publisher<RealtimeMsg>::SharedPtr pub_realtime_;
 	rclcpp::Publisher<MonitorMsg>::SharedPtr pub_monitor_;
