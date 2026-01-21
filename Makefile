@@ -14,7 +14,7 @@ ENV_SCRIPT := $(TOOLS_DIR)/setup_env.sh
 # Helper: run any command inside a login shell that sources env first.
 # Note: "source" affects only the subshell, which is exactly what we want.
 define WITH_ENV
-bash -lc 'source "$(ENV_SCRIPT)" >/dev/null && $(1)'
+set +u; source "$(ENV_SCRIPT)" >/dev/null; set -u; $(1)
 endef
 
 .PHONY: help env check-env format \
@@ -34,7 +34,7 @@ help:
 	@echo "  make format             - run astyle formatter (if script exists)"
 
 env: check-env
-	@$(call WITH_ENV, 'echo "ROS_DISTRO=$$ROS_DISTRO"; echo "$$AMENT_PREFIX_PATH" | tr ":" "\n" | nl -ba')
+	@$(call WITH_ENV, echo "ROS_DISTRO=$$ROS_DISTRO"; echo "$$AMENT_PREFIX_PATH" | tr ":" "\n" | nl -ba)
 
 check-env:
 	@if [ ! -f "$(ENV_SCRIPT)" ]; then \
@@ -58,15 +58,15 @@ format:
 
 debug: check-env
 	@echo "[INFO] colcon build (Debug, -O0, symbols)"
-	@$(call WITH_ENV, 'colcon build --symlink-install \
+	@$(call WITH_ENV, colcon build --symlink-install \
 		--cmake-args \
 			-DCMAKE_BUILD_TYPE=Debug \
 			-DCMAKE_CXX_FLAGS="-O0 -g3 -ggdb3 -fno-omit-frame-pointer -Wall -Wextra -Wpedantic" \
-			-DCMAKE_C_FLAGS="-O0 -g3 -ggdb3 -fno-omit-frame-pointer -Wall -Wextra -Wpedantic"')
+			-DCMAKE_C_FLAGS="-O0 -g3 -ggdb3 -fno-omit-frame-pointer -Wall -Wextra -Wpedantic")
 
 release: check-env
 	@echo "[INFO] colcon build (Release)"
-	@$(call WITH_ENV, 'colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release')
+	@$(call WITH_ENV, colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release)
 
 clean:
 	@echo "[INFO] clean build/install/log"
@@ -80,4 +80,4 @@ release-clean: clean release
 # -------------------------
 
 list-bin: check-env
-	@$(call WITH_ENV, 'P=$$(ros2 pkg prefix sunhawk_debug); echo "[INFO] prefix=$$P"; ls -lah "$$P/lib/sunhawk_debug"')
+	@$(call WITH_ENV, P=$$(ros2 pkg prefix sunhawk_debug); echo "[INFO] prefix=$$P"; ls -lah "$$P/lib/sunhawk_debug")
