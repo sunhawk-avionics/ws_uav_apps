@@ -166,10 +166,9 @@ public:
 				engine_enable_.store(true);   // 上升沿：点火成功后进入“持续阶段”
 			}
 
-			if (msg->stop || msg->kill) {
+			if (msg->flame_out) {
 				engine_enable_.store(false);  // 只有熄火指令能清掉自保持
 			}
-
 		});
 
 		sub_thrust_sp_ = this->create_subscription<ThrustSpMsg>(
@@ -288,30 +287,23 @@ private:
 		return p;
 	}
 
-	void update_stage_from_start(const rclcpp::Time &now, bool start_cmd, double rpm_true)
+	void update_stage_from_start(const rclcpp::Time &now, bool enable, double rpm_true)
 	{
-		if (!start_cmd) {
+		if (!enable) {
 			stage_state_ = stage_off_;
 			start_begin_time_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
 			return;
 		}
 
-		// start_cmd == true
-		if (stage_state_ == stage_off_ || stage_state_ == stage_shutdown_) {
+		if (stage_state_ == stage_off_) {
 			stage_state_ = stage_start_;
 			start_begin_time_ = now;
-			return;
-		}
 
-		if (stage_state_ == stage_start_) {
-			const double gate_rpm = idle_rpm_ * clamp(start_to_run_rpm_ratio_, 0.1, 1.2);
-			double t = 0.0;
+		} else if (stage_state_ == stage_start_) {
+			bool time_ok = (now - start_begin_time_).seconds() >= start_to_run_min_time_s_;
+			bool rpm_ok  = rpm_true >= idle_rpm_ * 0.95f;
 
-			if (start_begin_time_.nanoseconds() != 0) {
-				t = (now - start_begin_time_).seconds();
-			}
-
-			if (rpm_true >= gate_rpm && t >= start_to_run_min_time_s_) {
+			if (time_ok && rpm_ok) {
 				stage_state_ = stage_run_;
 			}
 		}
@@ -339,32 +331,27 @@ private:
 
 		if (dt > 0.2) { dt = 0.2; }
 
-		const bool start_cmd = start_cmd_.load();
+		const bool enable = engine_enable_.load();
 		const double thr_raw_in = throttle_raw_.load();
 		double coll_in = collective_cmd_.load();
 
 		// 用“上一拍”的真实转速做 stage 判据（避免用刚更新的 rpm 造成抖动）
 		const double rpm_true_pre = engine_.rpm_true();
-		update_stage_from_start(now, start_cmd, rpm_true_pre);
+		update_stage_from_start(now, enable, rpm_true_pre);
 
 		// 根据阶段强制输入
 		double thr_raw = thr_raw_in;
 		double coll = coll_in;
 
-		if (!start_cmd) {
-			// 未启动或强制熄火：输入全部归零
-			thr_raw = 0.0;
-			coll = 0.0;
+		if (!enable) {
+			thr_raw = 0.0f;
+			coll    = 0.0f;
 		}
 
 		if (stage_state_ != stage_run_) {
-			if (start_force_throttle_zero_) {
-				thr_raw = 0.0;
-			}
-
-			if (start_force_collective_zero_) {
-				coll = 0.0;
-			}
+			// 启动阶段：允许模型自行升到 idle，但不允许外部给大油门/总距
+			thr_raw = 0.0f;
+			coll    = 0.0f;
 		}
 
 		engine_.set_inputs(thr_raw, coll, stage_state_);
