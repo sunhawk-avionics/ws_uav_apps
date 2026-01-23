@@ -12,6 +12,10 @@ def generate_launch_description():
         pkg_share, 'config', 'engine_rpm_model.yaml'
     )
 
+    keyboard_param = os.path.join(
+        pkg_share, 'config', 'keyboard_manual_control.yaml'
+    )
+
     # 1. micro-ros-agent（外部进程）
     micro_ros_agent = ExecuteProcess(
         cmd=['MicroXRCEAgent', 'udp4', '--port', '8888', '-v'],
@@ -41,6 +45,7 @@ def generate_launch_description():
         executable='keyboard_manual_control_node_sdl2',
         name='keyboard_control',
         output='screen',
+        parameters=[keyboard_param],
     )
 
 

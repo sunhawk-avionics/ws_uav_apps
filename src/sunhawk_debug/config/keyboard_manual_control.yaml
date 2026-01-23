@@ -1,0 +1,9 @@
+keyboard_manual_control:
+  ros__parameters:
+
+    throttle_min: -1.0
+    throttle_max: 1.0
+    throttle_center: 0.0
+    throttle_reset: 0.0
+    auto_center_throttle: false
+    throttle_snap_to_center: 0.05
