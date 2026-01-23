@@ -102,8 +102,7 @@ cd ~/px4_ros/ws_uav_apps
 bash Tools/setup_env.sh
 
 # 2. 当前工程
-colcon build
-source install/local_setup.bash
+make release
 ```
 
 ---
@@ -123,6 +122,11 @@ ros2 run ros_gz_bridge parameter_bridge \
 ---
 
 ### 5.2 运行节点示例
+
+#### 运行脚本
+```bash
+ros2 launch sunhawk_debug sim_all.py
+```
 
 #### 键盘手动控制节点
 
