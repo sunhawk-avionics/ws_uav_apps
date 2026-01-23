@@ -73,8 +73,8 @@ engine_rpm_model:
     torque_curve_rpm:  [0.0, 1600.0, 3000.0, 5000.0, 5800.0]
     torque_curve_norm: [0.40, 0.65, 0.90, 1.00, 0.90]
 
-    # 额外的寄生阻力（可选）：drag_c2 可以模拟高速风阻/齿轮箱搅油损失
-    drag_c0: 0.0
+    # 额外的寄生阻力：drag_c2 可以模拟高速风阻/齿轮箱搅油损失
+    drag_c0: 0.001
     drag_c1: 0.0
     drag_c2: 0.0
 
@@ -110,14 +110,14 @@ engine_rpm_model:
     idle_throttle_threshold: 0.02
 
     idle_kp: 0.0006
-    idle_ki: 0.15
+    idle_ki: 0.005
 
     # 允许 idle PI 输出到 0（否则会出现怠速被抬高/无法稳定）
     idle_fuel_min: 0.0
     idle_fuel_max: 0.30
 
-    idle_integ_min: -5.0
-    idle_integ_max:  5.0
+    idle_integ_min: -60.0
+    idle_integ_max:  60.0
 
     # -------------------- optional internal governor --------------------
     # 如果希望“仿真节点自己定转速并反推油门”，打开 governor_enable
@@ -137,4 +137,4 @@ engine_rpm_model:
 
     # -------------------- rpm sensor model --------------------
     rpm_sensor_tau: 0.02
-    rpm_noise_std: 0.0
+    rpm_noise_std: 15.0

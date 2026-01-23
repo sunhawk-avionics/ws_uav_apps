@@ -4,8 +4,8 @@
  *
  * 关键点（按你的需求）：
  * 1) 通过 SunhawkEngineCtrl.start 来决定发动机是否“点火运行”
- *    - start==false : 输出 0 RPM（发动机关闭）
- *    - start==true  : 自动启动并进入怠速（idle_rpm=1600）
+ *    - start 是 pulse
+ *    - flame_out 是 stop/reset
  * 2) 启动/怠速阶段：油门=0，总距=0（可参数化强制）
  * 3) 启动后：0 油门=1600rpm（怠速保持），油门在此基础上增加转速；
  *    只有负载（总距）足够大时才会把 rpm 拉低。
