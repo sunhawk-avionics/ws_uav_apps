@@ -10,10 +10,10 @@
  * 设计取舍：
  * - 绝大部分参数都可在 YAML 里标定，不强行假设真实的 Nm 单位；
  *   torque_max=1.0 时就是“归一化扭矩”模型。
- * - 负载模型支持用你已有的标定：
+ * - 负载模型支持用已有的标定：
  *   在 load_rpm_ref(默认 5000rpm) 下，不同 collective 对应“维持转速所需油门(fuel_required_points)”。
- *   这样你给的 (coll=0 -> thr=0.23) / (coll=0.85 -> thr=0.77) 能被精确满足。
- * - 可选内置 governor：如果你想让仿真节点自己“定转速反推油门”，打开 governor.enable 即可。
+ *   这样给的 (coll=0 -> thr=0.23) / (coll=0.85 -> thr=0.77) 能被精确满足。
+ * - 可选内置 governor：如果想让仿真节点自己“定转速反推油门”，打开 governor.enable 即可。
  *
  ****************************************************************************/
 
@@ -240,7 +240,7 @@ struct Params {
 	double drag_c2{0.0};
 
 	// ---- rotor / load model (calibrated) ----
-	// 使用你标定的：在 load_rpm_ref 下，维持转速所需油门(fuel_required)
+	// 在 load_rpm_ref 下，维持转速所需油门(fuel_required)
 	double load_rpm_ref{5000.0};
 	double load_omega_exp{2.0};          // torque ~ omega^exp, default 2
 	double air_density_ratio{1.0};       // ρ/ρ0
@@ -263,7 +263,6 @@ struct Params {
 	bool idle_controller_enable{true};
 	double idle_rpm{1600.0};
 	double idle_throttle_threshold{0.02};
-	double idle_collective_threshold{0.05};
 	double idle_kp{0.0006};
 	double idle_ki{0.15};
 	double idle_fuel_min{0.05};

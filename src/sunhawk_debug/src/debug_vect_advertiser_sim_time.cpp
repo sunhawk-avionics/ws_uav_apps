@@ -26,7 +26,7 @@ public:
 		publisher_ = this->create_publisher<px4_msgs::msg::DebugVect>("/fmu/in/debug_vect", 10);
 
 		// ✅ 定时器：用成员函数 create_wall_timer，最稳的写法
-		//    这里的 500ms 就是你的“频率控制点”
+		//    这里的 500ms 就是“频率控制点”
 		timer_ = this->create_wall_timer(
 				 500ms,  // TODO: 想改频率就改这里
 				 std::bind(&DebugVectAdvertiserSimTime::on_timer, this));

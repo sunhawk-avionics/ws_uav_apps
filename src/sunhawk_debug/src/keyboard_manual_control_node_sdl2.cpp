@@ -90,7 +90,7 @@ public:
 		// 说明：
 		// 1) 之前用 BORDERLESS + Grab 会导致“无法拖动/无法点 X 关闭”的体验。
 		// 2) 这里默认使用带标题栏的窗口：可拖动、可点 X 关闭。
-		// 3) 仍尽量置顶，方便你把它放在角落当作 HUD。
+		// 3) 仍尽量置顶，方便把它放在角落当作 HUD。
 		Uint32 win_flags = SDL_WINDOW_SHOWN;
 #ifdef SDL_WINDOW_ALWAYS_ON_TOP
 		win_flags |= SDL_WINDOW_ALWAYS_ON_TOP;
@@ -273,7 +273,7 @@ public:
 	}
 
 private:
-	// 5x7 bitmap font：只做我们需要的一小撮字符（够用就行，别追求书法）
+	// 5x7 bitmap font：只做需要的字符
 	static const uint8_t *glyph_5x7(char c)
 	{
 		// 每行 5bit（MSB 在左）
@@ -372,7 +372,7 @@ private:
 		int cx = x;
 
 		for (char c : s) {
-			// 我们只实现了大写；如果进来的是小写，转大写
+			// 只实现了大写；如果进来的是小写，转大写
 			if (c >= 'a' && c <= 'z') {
 				c = static_cast<char>(c - 'a' + 'A');
 			}
@@ -545,7 +545,7 @@ private:
 			target_yaw_   = 0.0;
 			break;
 
-		case 'v': // 总距/油门回到中位（你要的“回到 0”）
+		case 'v': // 总距/油门回到中位
 			target_thr_ = throttle_center_;
 			break;
 
@@ -722,7 +722,7 @@ private:
 		double thr_out = apply_deadband(thr_centered, deadband_) + throttle_center_;
 		thr_out = clamp(thr_out, throttle_min_, throttle_max_);
 
-		// 6) HUD 渲染（你提的“黑框里显示 manual_control_input”）
+		// 6) HUD 渲染（“黑框里显示 manual_control_input”）
 		keyboard_.render(
 			pitch_out,
 			roll_out,

@@ -79,7 +79,7 @@ engine_rpm_model:
     drag_c2: 0.0
 
     # -------------------- rotor/load calibration --------------------
-    # 你给的标定：在定转速 5000 下，coll=0 -> throttle≈0.23；coll=0.85 -> throttle≈0.77
+    # 在定转速 5000 下，coll=0 -> throttle≈0.23；coll=0.85 -> throttle≈0.77
     # 这里把它当作“负载映射”，用于把总距转换成等效负载扭矩。
     load_rpm_ref: 5000.0
     load_omega_exp: 2.0

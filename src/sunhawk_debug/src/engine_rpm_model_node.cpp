@@ -2,7 +2,7 @@
  *
  * Realistic Engine RPM Plant Model Node (ROS 2)
  *
- * 关键点（按你的需求）：
+ * 关键点：
  * 1) 通过 SunhawkEngineCtrl.start 来决定发动机是否“点火运行”
  *    - start 是 pulse
  *    - flame_out 是 stop/reset
@@ -256,9 +256,6 @@ private:
 		p.idle_controller_enable = this->declare_parameter<bool>("idle_controller_enable", true);
 		p.idle_rpm = this->declare_parameter<double>("idle_rpm", 1600.0);
 		p.idle_throttle_threshold  = this->declare_parameter<double>("idle_throttle_threshold", 0.02);
-		// 注意：为了满足“0油门=怠速，即使给总距也不立刻熄火”的需求，
-		// plant 端不再用 idle_collective_threshold 作为 gating（仍保留参数声明兼容）。
-		p.idle_collective_threshold = this->declare_parameter<double>("idle_collective_threshold", 1.0);
 		p.idle_kp = this->declare_parameter<double>("idle_kp", 0.0006);
 		p.idle_ki = this->declare_parameter<double>("idle_ki", 0.15);
 		p.idle_fuel_min = this->declare_parameter<double>("idle_fuel_min", 0.0);
