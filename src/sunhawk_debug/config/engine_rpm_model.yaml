@@ -18,6 +18,9 @@ engine_rpm_model:
     start_to_run_rpm_ratio: 0.95
     start_to_run_min_time_s: 0.8
 
+    # 优先使用 EngineCtrlMsg.engine_stage 控制启停（stage==0 -> 熄火）
+    use_engine_stage_for_enable: true
+
     # -------------------- throttle input mapping --------------------
     # SunhawkEngineCtrl 内部可能有 throttle / output 字段；这里优先使用 output（如果存在）
     throttle_prefer_output_field: true
@@ -53,6 +56,11 @@ engine_rpm_model:
 
     # 低于这个转速（OFF/SHUTDOWN）就直接“吸住”到 0，避免无限趋近 0 的尾巴
     rpm_stop_threshold: 20.0
+
+    # OFF/SHUTDOWN 额外刹车时间常数：[s]
+    # - 0 关闭；完全靠 drag/load 自然减速
+    # - 典型值 0.3~0.6s：可实现熄火后 1~2s 迅速归零
+    off_brake_tau: 0.4
 
     # -------------------- shaft dynamics --------------------
     # 转动惯量（归一化模型的关键）：

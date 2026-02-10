@@ -216,6 +216,11 @@ struct Params {
 	// OFF/SHUTDOWN 时，当转速低于该阈值就“吸住”到 0，避免出现无限趋近 0 的尾巴
 	double rpm_stop_threshold{20.0};
 
+	// OFF/SHUTDOWN 额外刹车时间常数：[s]
+	// - 0 表示关闭（完全靠 load/drag 自然减速）
+	// - 典型值 0.3~0.6s：可实现“熄火后 1~2s 迅速归零”的观感
+	double off_brake_tau{0.4};
+
 	// ---- shaft dynamics ----
 	double shaft_inertia_J{3.5e-4};
 
@@ -448,14 +453,24 @@ public:
 		}
 
 		// 8) integrate shaft dynamics
+		const double J = std::max(p_.shaft_inertia_J, 1e-6);
+
+		// OFF/SHUTDOWN 额外“刹车”项：实现更符合直觉的快速停转
+		// dω/dt = -(1/off_brake_tau) * ω  =>  T_brake = (J/off_brake_tau) * ω
+		double T_brake = 0.0;
+
+		if ((mode == Mode::OFF || mode == Mode::SHUTDOWN) && (p_.off_brake_tau > 1e-6)) {
+			const double tau = std::max(p_.off_brake_tau, 1e-3);
+			T_brake = (J / tau) * std::max(0.0, omega_);
+		}
+
 		double T_net = T_engine + T_starter - T_load - T_drag;
 
 		if (mode == Mode::OFF || mode == Mode::SHUTDOWN) {
 			// when off, no combustion torque and no starter
-			T_net = -T_load - T_drag;
+			T_net = -T_load - T_drag - T_brake;
 		}
 
-		const double J = std::max(p_.shaft_inertia_J, 1e-6);
 		omega_ += (T_net / J) * dt;
 		omega_ = clamp(omega_, 0.0, rpm_to_omega(p_.rpm_max));
 

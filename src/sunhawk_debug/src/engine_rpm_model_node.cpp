@@ -67,6 +67,22 @@ struct has_start_field : std::false_type {};
 template<typename T>
 struct has_start_field<T, std::void_t<decltype(std::declval<T>().start)>> : std::true_type {};
 
+template<typename T, typename = void>
+struct has_engine_stage_field : std::false_type {};
+
+template<typename T>
+struct has_engine_stage_field<T, std::void_t<decltype(std::declval<T>().engine_stage)>> : std::true_type {};
+
+static inline int engine_stage_from_msg(const EngineCtrlMsg &m)
+{
+	if constexpr(has_engine_stage_field<EngineCtrlMsg>::value) {
+		return static_cast<int>(m.engine_stage);
+	}
+
+	return 0;
+}
+
+
 static inline double throttle_raw_from_msg(const EngineCtrlMsg &m, bool prefer_output)
 {
 	if constexpr(has_output_field<EngineCtrlMsg>::value) {
@@ -136,6 +152,9 @@ public:
 		start_to_run_rpm_ratio_ = this->declare_parameter<double>("start_to_run_rpm_ratio", 0.95);
 		start_to_run_min_time_s_ = this->declare_parameter<double>("start_to_run_min_time_s", 0.8);
 
+		// 如果 EngineCtrlMsg 带 engine_stage：用它来决定“是否允许运行”（stage==0 -> off）
+		use_engine_stage_for_enable_ = this->declare_parameter<bool>("use_engine_stage_for_enable", true);
+
 		// -------------------- model params --------------------
 		auto p = load_params_from_ros();
 		engine_.set_params(p);
@@ -159,17 +178,33 @@ public:
 			const double thr_raw = throttle_raw_from_msg(*msg, throttle_prefer_output_field_);
 			throttle_raw_.store(thr_raw);
 
+			// 1) 保存 engine_stage（用于 monitor 发布）
+			const int ctrl_stage = engine_stage_from_msg(*msg);
+			engine_stage_in_.store(ctrl_stage);
+
+			// 2) stage==0：强制熄火（不管之前是否自保持）
+			if (ctrl_stage == 0) {
+				engine_enable_.store(false);
+				prev_start_.store(false);
+				return;
+			}
+
+			// 3) flame_out：强制熄火
+			if (msg->flame_out) {
+				engine_enable_.store(false);
+				prev_start_.store(false);
+				return;
+			}
+
+			// 4) 是否“开始有转速/进入运行”只靠 iginte（上升沿自保持）
 			bool start = msg->iginte;
 			bool last  = prev_start_.exchange(start);
 
 			if (start && !last) {
-				engine_enable_.store(true);   // 上升沿：点火成功后进入“持续阶段”
-			}
-
-			if (msg->flame_out) {
-				engine_enable_.store(false);  // 只有熄火指令能清掉自保持
+				engine_enable_.store(true);
 			}
 		});
+
 
 		sub_thrust_sp_ = this->create_subscription<ThrustSpMsg>(
 					 input_thrust_sp_topic_, qos,
@@ -214,6 +249,8 @@ private:
 		p.rpm_max  = this->declare_parameter<double>("rpm_max", 5800.0);
 		p.rpm_init = this->declare_parameter<double>("rpm_init", 0.0);
 		p.rpm_stop_threshold = this->declare_parameter<double>("rpm_stop_threshold", 20.0);
+
+		p.off_brake_tau = this->declare_parameter<double>("off_brake_tau", p.off_brake_tau);
 
 		// shaft dynamics
 		p.shaft_inertia_J = this->declare_parameter<double>("shaft_inertia_J", 3.5e-4);
@@ -298,7 +335,7 @@ private:
 
 		} else if (stage_state_ == stage_start_) {
 			bool time_ok = (now - start_begin_time_).seconds() >= start_to_run_min_time_s_;
-			bool rpm_ok  = rpm_true >= idle_rpm_ * 0.95f;
+			bool rpm_ok  = rpm_true >= idle_rpm_ * start_to_run_rpm_ratio_;
 
 			if (time_ok && rpm_ok) {
 				stage_state_ = stage_run_;
@@ -345,29 +382,43 @@ private:
 			coll    = 0.0f;
 		}
 
-		if (stage_state_ != stage_run_) {
-			// 启动阶段：允许模型自行升到 idle，但不允许外部给大油门/总距
-			thr_raw = 0.0f;
-			coll    = 0.0f;
+		if (enable && stage_state_ != stage_run_) {
+			// 启动阶段：允许模型自行升到 idle；是否强制屏蔽外部油门/总距由参数决定
+			if (start_force_throttle_zero_) {
+				thr_raw = 0.0;
+			}
+
+			if (start_force_collective_zero_) {
+				coll = 0.0;
+			}
 		}
 
 		engine_.set_inputs(thr_raw, coll, stage_state_);
 		engine_.step(dt);
 
 		const uint64_t ts_us = static_cast<uint64_t>(now.nanoseconds() / 1000LL);
-		const double rpm_meas = engine_.rpm_measured();
+		const double rpm_true = engine_.rpm_true();
+		double rpm_fb = engine_.rpm_measured();
 		const double thr_norm = engine_.throttle_out_norm();
 
+		// 熄火/未启动时：不发布噪声（否则 0 附近会出现正负抖动）
+		if (!enable) {
+			rpm_fb = rpm_true;
+		}
+
+		// 物理约束：RPM 不应为负（噪声可能导致负值）
+		rpm_fb = std::max(0.0, rpm_fb);
+
 		RealtimeMsg rt{};
-		fill_realtime_msg(rt, ts_us, rpm_meas, thr_norm);
+		fill_realtime_msg(rt, ts_us, rpm_fb, thr_norm);
 		pub_realtime_->publish(rt);
 
 		MonitorMsg mon{};
-		fill_monitor_msg(mon, ts_us, stage_state_);
+		fill_monitor_msg(mon, ts_us, engine_stage_in_.load());
 		pub_monitor_->publish(mon);
 
 		RpmMsg rpm{};
-		fill_rpm_msg(rpm, ts_us, rpm_meas);
+		fill_rpm_msg(rpm, ts_us, rpm_fb);
 		pub_rpm_->publish(rpm);
 	}
 
@@ -391,6 +442,8 @@ private:
 	double start_to_run_min_time_s_{0.8};
 	double idle_rpm_{1600.0};
 
+	bool use_engine_stage_for_enable_{true};
+
 	int stage_off_{0};
 	int stage_start_{1};
 	int stage_run_{2};
@@ -402,6 +455,7 @@ private:
 	engine_sim::EnginePlant engine_{};
 
 	std::atomic<double> throttle_raw_{0.0};
+	std::atomic<int> engine_stage_in_{0};
 	std::atomic<double> collective_cmd_{0.0};
 	std::atomic<bool> engine_enable_{false};   // 是否允许运行（自保持）
 	std::atomic<bool> prev_start_{false};      // 用于检测上升沿
