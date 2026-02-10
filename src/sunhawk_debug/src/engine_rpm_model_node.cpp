@@ -159,7 +159,7 @@ public:
 			const double thr_raw = throttle_raw_from_msg(*msg, throttle_prefer_output_field_);
 			throttle_raw_.store(thr_raw);
 
-			bool start = msg->start;
+			bool start = msg->iginte;
 			bool last  = prev_start_.exchange(start);
 
 			if (start && !last) {
