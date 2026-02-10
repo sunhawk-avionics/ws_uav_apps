@@ -192,7 +192,7 @@ public:
 	void render(double pitch, double roll, double yaw,
 		    double thr, double target_thr,
 		    double eng_throttle,
-		    bool ecu_on, int starter_sw,
+		    int ecu_sw, int starter_sw,
 		    bool auto_center_throttle,
 		    double thr_center, double thr_min, double thr_max)
 	{
@@ -222,7 +222,7 @@ public:
 		std::string line1 = std::string("P:") + b_p + " R:" + b_r + " Y:" + b_y;
 		std::string line2 = std::string("T:") + b_t + " TG:" + b_tg + " ENG:" + b_e;
 
-		std::string line3 = std::string("ECU:") + (ecu_on ? "ON" : "OFF") +
+		std::string line3 = std::string("ECU:") + (ecu_sw > 0 ? "OFF" : "ON") +
 				    " ST:" + (starter_sw > 0 ? "ON" : "OFF") +
 				    " THR:" + (auto_center_throttle ? "CTR" : "HLD");
 
@@ -556,11 +556,10 @@ private:
 			break;
 
 		case 'p':  // ECU power toggle
-			ecu_on_ = !ecu_on_;
-			ecu_sw_ = ecu_on_ ? +1.0 : -1.0;
+			ecu_sw_ = ecu_sw_ > 0 ? -1.0 : +1.0;
 
 			// 关键：ECU 断电时，强制启动无效、发动机油门回到安全值
-			if (!ecu_on_) {
+			if (!ecu_sw_) {
 				starter_sw_          = -1.0;
 				starter_pulse_until_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
 				target_eng_throttle_ = -1.0;
@@ -620,7 +619,7 @@ private:
 		// 3) 依据“按键当前是否按住”更新 target（核心：多键同时按自然叠加）
 		const bool start_key_down = keyboard_.down(SDL_SCANCODE_I); // I = ignition/start
 
-		if (!ecu_on_) {
+		if (!ecu_sw_) {
 			starter_sw_ = -1.0;
 
 		} else if (starter_hold_mode_) {
@@ -730,7 +729,7 @@ private:
 			thr_out,
 			target_thr_,
 			eng_throttle_,
-			ecu_on_,
+			ecu_sw_,
 			(starter_sw_ > 0.0) ? +1 : -1,
 			auto_center_throttle_,
 			throttle_center_,
@@ -790,8 +789,7 @@ private:
 	double expo_{0.25};
 
 	// ECU power: latched switch (-1 off, +1 on)
-	bool ecu_on_{false};  // internal state
-	double ecu_sw_{-1.0}; // exported value
+	double ecu_sw_{1.0f}; // exported value
 
 	// Starter: momentary (-1 idle, +1 active)
 	double starter_sw_{-1.0};      // exported value
