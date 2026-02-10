@@ -99,7 +99,7 @@ public:
 				  "keyboard_manual_control (click to focus, ESC quits)",
 				  SDL_WINDOWPOS_CENTERED,
 				  SDL_WINDOWPOS_CENTERED,
-				  420, 200,
+				  420, 300,
 				  win_flags);
 
 		if (!window_) {
@@ -220,18 +220,15 @@ public:
 		std::snprintf(b_e,  sizeof(b_e),  "%+.2f", eng_throttle);
 
 		std::string line1 = std::string("P:") + b_p + " R:" + b_r + " Y:" + b_y;
-		std::string line2 = std::string("T:") + b_t + " TG:" + b_tg + " ENG:" + b_e;
-
-		std::string line3 = std::string("ECU:") + (ecu_sw > 0 ? "OFF" : "ON") +
-				    " ST:" + (starter_sw > 0 ? "ON" : "OFF") +
-				    " THR:" + (auto_center_throttle ? "CTR" : "HLD");
+		std::string line2 = std::string("T:") + b_t + " ENG:" + b_e;
+		std::string line3 = std::string("THR:") + (auto_center_throttle ? "CTR" : "HLD");
 
 		draw_text(x0, y0 + 0 * line_h, line1, scale, 255, 255, 255, 255);
 		draw_text(x0, y0 + 1 * line_h, line2, scale, 255, 255, 255, 255);
 		draw_text(x0, y0 + 2 * line_h, line3, scale, 255, 255, 255, 255);
 
 		// --- 条形图 ---
-		const int bar_h = 12;
+		const int bar_h = 20;
 		const int row_h = bar_h + 10;
 		const int y_bar0 = y0 + 3 * line_h + 10;
 
@@ -259,7 +256,9 @@ public:
 		draw_bar_row('R', roll,                     x0, y_bar0 + 1 * row_h, bar_x, bar_w, bar_h);
 		draw_bar_row('Y', yaw,                      x0, y_bar0 + 2 * row_h, bar_x, bar_w, bar_h);
 		draw_bar_row('T', thr_norm,                 x0, y_bar0 + 3 * row_h, bar_x, bar_w, bar_h);
-		draw_bar_row('E', eng_throttle,             x0, y_bar0 + 4 * row_h, bar_x, bar_w, bar_h);
+		draw_bar_row('1', ecu_sw,                   x0, y_bar0 + 4 * row_h, bar_x, bar_w, bar_h);
+		draw_bar_row('2', starter_sw,               x0, y_bar0 + 5 * row_h, bar_x, bar_w, bar_h);
+		draw_bar_row('3', eng_throttle,             x0, y_bar0 + 6 * row_h, bar_x, bar_w, bar_h);
 
 		// throttle 的 target marker
 		{
