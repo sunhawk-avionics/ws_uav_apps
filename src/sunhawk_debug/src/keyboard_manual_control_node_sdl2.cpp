@@ -220,8 +220,11 @@ public:
 		std::snprintf(b_e,  sizeof(b_e),  "%+.2f", eng_throttle);
 
 		std::string line1 = std::string("P:") + b_p + " R:" + b_r + " Y:" + b_y;
-		std::string line2 = std::string("T:") + b_t + " ENG:" + b_e;
-		std::string line3 = std::string("THR:") + (auto_center_throttle ? "CTR" : "HLD");
+		std::string line2 = std::string("T:") + b_t + " TG:" + b_tg + " ENG:" + b_e;
+
+		std::string line3 = std::string("ECU:") + (ecu_on ? "ON" : "OFF") +
+				    " ST:" + (starter_sw > 0 ? "ON" : "OFF") +
+				    " THR:" + (auto_center_throttle ? "CTR" : "HLD");
 
 		draw_text(x0, y0 + 0 * line_h, line1, scale, 255, 255, 255, 255);
 		draw_text(x0, y0 + 1 * line_h, line2, scale, 255, 255, 255, 255);
