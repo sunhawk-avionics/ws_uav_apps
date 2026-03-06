@@ -222,7 +222,7 @@ public:
 		std::string line1 = std::string("P:") + b_p + " R:" + b_r + " Y:" + b_y;
 		std::string line2 = std::string("T:") + b_t + " TG:" + b_tg + " ENG:" + b_e;
 
-		std::string line3 = std::string("ECU:") + (ecu_on ? "ON" : "OFF") +
+		std::string line3 = std::string("ECU:") + (ecu_sw ? "ON" : "OFF") +
 				    " ST:" + (starter_sw > 0 ? "ON" : "OFF") +
 				    " THR:" + (auto_center_throttle ? "CTR" : "HLD");
 

@@ -24,7 +24,7 @@ set +u
 set +e
 
 # --- workspace root (edit here if needed) ---
-WS_ROOT="$HOME/px4_ros"
+WS_ROOT="$HOME/sunhawk_ros2_ws"
 WS_PX4_BRIDGE="$WS_ROOT/ws_px4_bridge"
 WS_UAV_APPS="$WS_ROOT/ws_uav_apps"
 

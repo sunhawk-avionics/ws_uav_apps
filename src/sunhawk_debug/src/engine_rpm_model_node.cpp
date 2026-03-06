@@ -196,8 +196,8 @@ public:
 				return;
 			}
 
-			// 4) 是否“开始有转速/进入运行”只靠 iginte（上升沿自保持）
-			bool start = msg->iginte;
+			// 4) 是否“开始有转速/进入运行”只靠 ignite（上升沿自保持）
+			bool start = msg->ignite;
 			bool last  = prev_start_.exchange(start);
 
 			if (start && !last) {
