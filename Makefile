@@ -1,18 +1,17 @@
 # ============================================================
-# Workspace Makefile for ROS 2 (Humble) + colcon
-# - Always sources Tools/setup_env.sh before build/run
-# - Debug build is breakpoint-friendly (-O0, -g3)
+# ws_uav_apps Makefile — ROS 2 (Humble) + colcon
+# - 编译前自动 source Tools/setup_env.sh
+# - Debug 构建支持断点调试 (-O0, -g3)
 # ============================================================
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-WS_DIR  := $(shell pwd)
-TOOLS_DIR := $(WS_DIR)/Tools
+WS_DIR     := $(shell pwd)
+TOOLS_DIR  := $(WS_DIR)/Tools
 ENV_SCRIPT := $(TOOLS_DIR)/setup_env.sh
 
-# Helper: run any command inside a login shell that sources env first.
-# Note: "source" affects only the subshell, which is exactly what we want.
+# Helper: 在子 shell 中 source 环境后执行命令
 define WITH_ENV
 set +u; source "$(ENV_SCRIPT)" >/dev/null; set -u; $(1)
 endef
@@ -23,25 +22,39 @@ endef
         list-bin
 
 help:
-	@echo "Targets:"
-	@echo "  make env                - print current ROS2 environment order"
-	@echo "  make debug              - Debug build (-O0 -g3), breakpoint-friendly"
-	@echo "  make release            - Release build"
-	@echo "  make clean              - remove build/install/log"
-	@echo "  make debug-clean        - clean + debug build"
-	@echo "  make release-clean      - clean + release build"
-	@echo "  make list-bin           - list installed executables for sunhawk_debug"
-	@echo "  make format             - run astyle formatter (if script exists)"
+	@echo "===== ws_uav_apps Makefile ====="
+	@echo ""
+	@echo "编译:"
+	@echo "  make debug          - Debug 构建 (-O0 -g3)，支持断点"
+	@echo "  make release        - Release 构建"
+	@echo ""
+	@echo "清理:"
+	@echo "  make clean          - 删除 build/install/log"
+	@echo "  make debug-clean    - clean + debug"
+	@echo "  make release-clean  - clean + release"
+	@echo ""
+	@echo "辅助:"
+	@echo "  make env            - 打印 ROS 2 环境层级"
+	@echo "  make format         - astyle 代码格式化"
+	@echo "  make list-bin       - 列出 sunhawk_debug 已安装的可执行文件"
 
-env: check-env
-	@$(call WITH_ENV, echo "ROS_DISTRO=$$ROS_DISTRO"; echo "$$AMENT_PREFIX_PATH" | tr ":" "\n" | nl -ba)
+# -------------------------
+# 环境检查
+# -------------------------
 
 check-env:
 	@if [ ! -f "$(ENV_SCRIPT)" ]; then \
 		echo "[ERROR] Missing env script: $(ENV_SCRIPT)"; \
-		echo "        Please create it (Tools/setup_env.sh)"; \
+		echo "        Please create Tools/setup_env.sh"; \
 		exit 1; \
 	fi
+
+env: check-env
+	@$(call WITH_ENV, echo "ROS_DISTRO=$$ROS_DISTRO"; echo "$$AMENT_PREFIX_PATH" | tr ":" "\n" | nl -ba)
+
+# -------------------------
+# 代码风格
+# -------------------------
 
 format:
 	@if [ -x "$(TOOLS_DIR)/astyle/check_code_style_all.sh" ]; then \
@@ -53,7 +66,7 @@ format:
 	fi
 
 # -------------------------
-# Build targets
+# 编译
 # -------------------------
 
 debug: check-env
@@ -68,6 +81,10 @@ release: check-env
 	@echo "[INFO] colcon build (Release)"
 	@$(call WITH_ENV, colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release)
 
+# -------------------------
+# 清理
+# -------------------------
+
 clean:
 	@echo "[INFO] clean build/install/log"
 	@rm -rf build install log
@@ -76,7 +93,7 @@ debug-clean: clean debug
 release-clean: clean release
 
 # -------------------------
-# Verification / inspection
+# 检查 / 诊断
 # -------------------------
 
 list-bin: check-env
